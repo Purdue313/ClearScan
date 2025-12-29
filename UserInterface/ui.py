@@ -48,9 +48,8 @@ class MainWindow(QWidget):
     """
 
     def __init__(self):
-        """
-        Initialize the UI, database connection, and layout.
-        """
+        
+        #Initialize the UI, database connection, and layout.
         super().__init__()
 
         self.setWindowTitle("ClearScan Medical Imaging")

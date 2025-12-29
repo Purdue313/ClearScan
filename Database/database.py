@@ -1,7 +1,7 @@
 import sqlite3
 from Source.image_model import ImageRecord
 
-DB_NAME = "clearscan.db"
+DB_NAME = "clearscanImage.db"
 
 class Database:
     def __init__(self):

@@ -8,12 +8,10 @@ Design goals:
 - Correct handling of both portrait and landscape images
 - Automatic EXIF orientation correction
 - Aspect-ratio-preserving image display
+- Store full file paths without copying files
 - Clean separation between controls and image viewer
 - Clear, maintainable code suitable for a senior project
 """
-
-import os
-import shutil
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -26,15 +24,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QScrollArea
 )
-from PySide6.QtGui import QPixmap, QImageReader, QTransform
+from PySide6.QtGui import QPixmap, QImageReader
 from PySide6.QtCore import Qt
 
 from Database.database import Database
 from Source.image_model import ImageRecord
-
-
-# Directory used to simulate a local EMR-style image storage system
-STORAGE_DIR = "storage"
 
 
 class MainWindow(QWidget):
@@ -44,19 +38,17 @@ class MainWindow(QWidget):
     Responsibilities:
     - Provide UI controls for uploading and selecting images
     - Display stored medical images accurately with correct orientation
-    - Coordinate UI actions with database and filesystem operations
+    - Coordinate UI actions with database operations
     """
 
     def __init__(self):
-        
-        #Initialize the UI, database connection, and layout.
+        """
+        Initialize the UI, database connection, and layout.
+        """
         super().__init__()
 
         self.setWindowTitle("ClearScan Medical Imaging")
         self.resize(1100, 650)
-
-        # Ensure the storage directory exists
-        os.makedirs(STORAGE_DIR, exist_ok=True)
 
         # Initialize database access layer
         self.db = Database()
@@ -121,8 +113,8 @@ class MainWindow(QWidget):
     def upload_image(self):
         """
         Opens a file dialog allowing the user to select an image.
-        The image is copied into local storage and metadata is saved
-        to the SQLite database.
+        The full path to the image is stored in the database without
+        copying the file.
         """
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -135,14 +127,9 @@ class MainWindow(QWidget):
         if not file_path:
             return
 
-        # Copy image to local EMR-style storage
-        filename = os.path.basename(file_path)
-        dest_path = os.path.join(STORAGE_DIR, filename)
-        shutil.copy(file_path, dest_path)
-
-        # Create metadata object
+        # Create metadata object with full path
         image = ImageRecord.create(
-            file_path=dest_path,
+            file_path=file_path,  # Store the full original path
             user="test_user"
         )
 
@@ -152,7 +139,7 @@ class MainWindow(QWidget):
         QMessageBox.information(
             self,
             "Upload Complete",
-            "Image uploaded successfully."
+            "Image path registered successfully."
         )
 
         # Refresh list of stored images
@@ -193,7 +180,7 @@ class MainWindow(QWidget):
         8: Rotate 90° CCW
 
         Args:
-            file_path: Path to the image file
+            file_path: Full path to the image file
 
         Returns:
             QPixmap: Properly oriented image, or None if loading fails
@@ -214,7 +201,8 @@ class MainWindow(QWidget):
         Displays the currently selected image in the viewer.
 
         This method:
-        - Loads the image from disk with correct EXIF orientation
+        - Loads the image from its original location using the stored path
+        - Applies correct EXIF orientation
         - Stores the original QPixmap
         - Scales it to fit the viewer while preserving aspect ratio
         """
@@ -231,7 +219,8 @@ class MainWindow(QWidget):
             QMessageBox.warning(
                 self,
                 "Error",
-                "Unable to load image."
+                f"Unable to load image from:\n{image.file_path}\n\n"
+                "The file may have been moved or deleted."
             )
             return
 

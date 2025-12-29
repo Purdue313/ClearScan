@@ -1,5 +1,5 @@
 import sqlite3
-from image_model import ImageRecord
+from Source.image_model import ImageRecord
 
 DB_NAME = "clearscan.db"
 

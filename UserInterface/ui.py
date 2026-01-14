@@ -13,7 +13,7 @@ from PySide6.QtGui import QPixmap, QImageReader, QDragEnterEvent, QDropEvent
 from PySide6.QtCore import Qt, QMimeData
 
 from Database.database import Database
-from Source.image_model import ImageRecord
+from Source.Models.image_model import ImageRecord
 
 
 class MainWindow(QWidget):

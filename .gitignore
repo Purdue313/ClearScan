@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+#machine learning algorithms
+machineLearningModel/chexpert_epoch_1.pth
+machineLearningModel/chexpert_epoch_2.pth
+machineLearningModel/chexpert_epoch_3.pth
+machineLearningModel/chexpert_epoch_4.pth
+machineLearningModel/chexpert_epoch_5.pth

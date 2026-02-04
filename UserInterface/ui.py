@@ -1,3 +1,4 @@
+from email.mime import image
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -12,8 +13,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap, QImageReader, QDragEnterEvent, QDropEvent
 from PySide6.QtCore import Qt, QMimeData
 
-from Database.database import Database
+from Database.imageDatabase import ImageDatabase
+from Database.findingsDatabase import FindingsDatabase
+
 from Source.Models.image_model import ImageRecord
+
+from machineLearningModel.prediction import load_model, predict_xray, CHECKPOINT_PATH
 
 
 class MainWindow(QWidget):
@@ -27,6 +32,7 @@ class MainWindow(QWidget):
         - Display images with correct orientation and scaling
         - Support drag-and-drop image uploads
         """
+        print("Initializing MainWindow...")
         super().__init__()
 
         self.setWindowTitle("ClearScan Medical Imaging")
@@ -38,13 +44,22 @@ class MainWindow(QWidget):
         # DATABASE
         # ============================================================
         # Handles all SQLite interactions (insert / fetch)
-        self.db = Database()
+        print("Initializing databases...")
+        self.db = ImageDatabase()
+        self.findings_db = FindingsDatabase()  # ML findings
 
         # Cache of ImageRecord objects currently displayed
         self.images = []
 
         # Stores the original pixmap so it can be re-scaled on resize
         self.current_pixmap = None
+
+        # ============================================================
+        # ML MODEL (LOADED ONCE)
+        # ============================================================
+        print("Loading ML model...")
+        self.model = load_model(CHECKPOINT_PATH)
+        print("Model loaded successfully!")
 
         # ============================================================
         # MAIN LAYOUT (LEFT: CONTROLS | RIGHT: IMAGE VIEWER)
@@ -72,6 +87,14 @@ class MainWindow(QWidget):
         left_panel.addWidget(self.refresh_btn)
         left_panel.addWidget(QLabel("Stored Scans:"))
         left_panel.addWidget(self.image_list)
+        
+        
+        # Ranked prediction results
+        self.results_label = QLabel("AI Analysis Results:")
+        self.results_list = QListWidget()
+
+        left_panel.addWidget(self.results_label)
+        left_panel.addWidget(self.results_list)
 
         # ============================================================
         # RIGHT PANEL: IMAGE VIEWER
@@ -86,12 +109,27 @@ class MainWindow(QWidget):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setWidget(self.image_label)
+        
+        # # Heatmap display
+        # self.heatmap_label = QLabel("Heatmap (Top Finding)")
+        # self.heatmap_label.setAlignment(Qt.AlignCenter)
+        # self.heatmap_label.setFixedHeight(300)
+
+        # right_panel = QVBoxLayout()
+        # right_panel.addWidget(self.image_label)
+        # right_panel.addWidget(self.heatmap_label)
+
+        # self.scroll_area.setWidget(QWidget())
+        # self.scroll_area.widget().setLayout(right_panel)
+
 
         # ============================================================
         # ADD PANELS TO MAIN LAYOUT
         # ============================================================
         main_layout.addLayout(left_panel, 1)
         main_layout.addWidget(self.scroll_area, 3)
+        
+        print("✓ MainWindow initialized successfully!")
 
     # ============================================================
     # IMAGE UPLOAD (FILE DIALOG)
@@ -153,27 +191,58 @@ class MainWindow(QWidget):
     # ============================================================
     def register_image(self, file_path):
         """
-        Centralized image registration logic.
-
-        Used by:
-        - File dialog uploads
-        - Drag-and-drop uploads
+        Registers an image, runs ML inference,
+        stores findings in a separate database,
+        and updates the UI.
         """
-        image = ImageRecord.create(
-            file_path=file_path,
-            user="test_user"
-        )
+        try:
+            # ============================================================
+            # 1. STORE IMAGE
+            # ============================================================
+            image = ImageRecord.create(
+                file_path=file_path,
+                user="test_user"
+            )
+            image = self.db.insert_image(image)
 
-        self.db.insert_image(image)
+            # ============================================================
+            # 2. RUN ML INFERENCE
+            # ============================================================
+            results = predict_xray(self.model, file_path)
 
-        QMessageBox.information(
-            self,
-            "Upload Complete",
-            "Image registered successfully."
-        )
+            # ============================================================
+            # 3. STORE FINDINGS (TOP RESULT ONLY)
+            # ============================================================
+            top = results["top_prediction"]
 
-        self.load_images()
+            self.findings_db.insert_findings([{
+                "image_id": image.id,
+                "label": top["label"],
+                "probability": top["probability"],
+                "model_version": "chexpert_resnet50_v1"
+            }])
 
+
+            # ============================================================
+            # 4. UPDATE UI
+            # ============================================================
+            self.load_images()
+            self.display_results(results)
+
+            # QMessageBox.information(
+            #     self,
+            #     "Upload Complete",
+            #     "Image uploaded and analyzed successfully."
+            # )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Processing Error",
+                str(e)
+            )
+
+    
     # ============================================================
     # LOAD IMAGES FROM DATABASE
     # ============================================================
@@ -219,13 +288,7 @@ class MainWindow(QWidget):
     # ============================================================
     def display_image(self):
         """
-        Displays the selected image from the list.
-
-        Steps:
-        - Load image using stored file path
-        - Apply EXIF orientation
-        - Cache the original pixmap
-        - Scale it to fit the viewport
+        Displays the selected image and its associated ML findings.
         """
         index = self.image_list.currentRow()
 
@@ -233,6 +296,10 @@ class MainWindow(QWidget):
             return
 
         image = self.images[index]
+
+        # ==============================
+        # LOAD AND DISPLAY IMAGE
+        # ==============================
         pixmap = self.load_pixmap_with_orientation(image.file_path)
 
         if pixmap is None:
@@ -246,6 +313,18 @@ class MainWindow(QWidget):
 
         self.current_pixmap = pixmap
         self.update_image_display()
+
+        # ==============================
+        # LOAD STORED FINDINGS
+        # ==============================
+        results = self.load_results_for_image(image.id)
+
+        if results:
+            self.display_results(results)
+        else:
+            self.results_list.clear()
+            self.results_list.addItem("No analysis available for this image.")
+
 
     # ============================================================
     # HANDLE WINDOW RESIZE
@@ -283,3 +362,58 @@ class MainWindow(QWidget):
         )
 
         self.image_label.setPixmap(scaled)
+        
+    # ============================================================
+    # DISPLAY AI PREDICTION RESULTS
+    # ============================================================
+    def display_results(self, results):
+        """
+        Displays ranked AI findings for an image.
+
+        Expected format:
+            results = [
+                {
+                    "label": str,
+                    "probability": float,
+                    "percentage": str
+                },
+                ...
+            ]
+        """
+        self.results_list.clear()
+
+        if not results or not isinstance(results, list):
+            self.results_list.addItem("No results available.")
+            return
+
+        for r in results:
+            label = r.get("label", "Unknown")
+            percentage = r.get("percentage")
+
+            # Fallback if percentage string is missing
+            if percentage is None:
+                prob = float(r.get("probability", 0.0))
+                percentage = f"{prob * 100:.2f}%"
+
+            self.results_list.addItem(f"{label} — {percentage}")
+            
+    # ============================================================
+    # DISPLAY AI PREDICTION RESULTS FROM DATABASE
+    # ============================================================
+    def load_results_for_image(self, image_id):
+        """
+        Loads stored ML findings for an image from the findings database
+        and converts them into the display_results() format.
+        """
+        rows = self.findings_db.fetch_findings_for_image(image_id)
+
+        results = []
+        for label, probability, model_version, created_at in rows:
+            results.append({
+                "label": label,
+                "probability": probability,
+                "percentage": f"{probability * 100:.2f}%"
+            })
+
+        return results
+

@@ -3,7 +3,7 @@ from Source.Models.image_model import ImageRecord
 
 DB_NAME = "clearscanImage.db"
 
-class Database:
+class ImageDatabase:
     """
     Database access layer for ClearScan Medical Imaging.
     

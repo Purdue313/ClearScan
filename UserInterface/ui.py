@@ -1,4 +1,3 @@
-from email.mime import image
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -8,34 +7,40 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QListWidget,
     QMessageBox,
-    QScrollArea
+    QScrollArea,
+    QSplitter,
+    QCheckBox
 )
-from PySide6.QtGui import QPixmap, QImageReader, QDragEnterEvent, QDropEvent
-from PySide6.QtCore import Qt, QMimeData
+from PySide6.QtGui import QPixmap, QImageReader, QDragEnterEvent, QDropEvent, QImage
+from PySide6.QtCore import Qt
+from PIL import Image
+import io
 
 from Database.imageDatabase import ImageDatabase
 from Database.findingsDatabase import FindingsDatabase
 
 from Source.Models.image_model import ImageRecord
 
-from machineLearningModel.prediction import load_model, predict_xray, CHECKPOINT_PATH
+from machineLearningModel.prediction import load_model, predict_xray, predict_with_heatmap, CHECKPOINT_PATH
 
 
 class MainWindow(QWidget):
     def __init__(self):
         """
-        Main application window for ClearScan.
+        Main application window for ClearScan with toggle heatmap support.
 
         Responsibilities:
         - Provide UI for uploading and viewing medical images
         - Store image metadata in the database
         - Display images with correct orientation and scaling
+        - Generate and display Grad-CAM heatmaps via toggle
         - Support drag-and-drop image uploads
         """
         print("Initializing MainWindow...")
         super().__init__()
 
-        self.setWindowTitle("ClearScan Medical Imaging")
+        self.setWindowTitle("ClearScan Medical Imaging - AI Analysis with Heatmaps")
+        self.setGeometry(100, 100, 1400, 800)
 
         # Enable drag-and-drop on the entire window
         self.setAcceptDrops(True)
@@ -43,16 +48,14 @@ class MainWindow(QWidget):
         # ============================================================
         # DATABASE
         # ============================================================
-        # Handles all SQLite interactions (insert / fetch)
         print("Initializing databases...")
         self.db = ImageDatabase()
-        self.findings_db = FindingsDatabase()  # ML findings
+        self.findings_db = FindingsDatabase()
 
-        # Cache of ImageRecord objects currently displayed
         self.images = []
-
-        # Stores the original pixmap so it can be re-scaled on resize
         self.current_pixmap = None
+        self.current_heatmap = None
+        self.current_image_path = None
 
         # ============================================================
         # ML MODEL (LOADED ONCE)
@@ -62,7 +65,7 @@ class MainWindow(QWidget):
         print("Model loaded successfully!")
 
         # ============================================================
-        # MAIN LAYOUT (LEFT: CONTROLS | RIGHT: IMAGE VIEWER)
+        # MAIN LAYOUT
         # ============================================================
         main_layout = QHBoxLayout(self)
 
@@ -71,76 +74,182 @@ class MainWindow(QWidget):
         # ============================================================
         left_panel = QVBoxLayout()
 
-        # Upload button (manual file dialog)
+        # Upload button
         self.upload_btn = QPushButton("Upload Image")
+        self.upload_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 10px;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
         self.upload_btn.clicked.connect(self.upload_image)
 
-        # Refresh / load images from database
+        # Refresh button
         self.refresh_btn = QPushButton("Load Previous Scans")
+        self.refresh_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 10px;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #0b7dda;
+            }
+        """)
         self.refresh_btn.clicked.connect(self.load_images)
+
+        # ============================================================
+        # HEATMAP TOGGLE SWITCH
+        # ============================================================
+        toggle_container = QHBoxLayout()
+        
+        self.heatmap_toggle = QCheckBox("Show Heatmap Overlay")
+        self.heatmap_toggle.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 50px;
+                height: 26px;
+                border-radius: 13px;
+            }
+            QCheckBox::indicator:unchecked {
+                background-color: #ccc;
+                border: 2px solid #999;
+            }
+            QCheckBox::indicator:unchecked:hover {
+                background-color: #bbb;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4CAF50;
+                border: 2px solid #45a049;
+            }
+            QCheckBox::indicator:checked:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.heatmap_toggle.stateChanged.connect(self.toggle_heatmap)
+        self.heatmap_toggle.setEnabled(False)
+        
+        toggle_container.addWidget(self.heatmap_toggle)
+        toggle_container.addStretch()
 
         # List of stored scans
         self.image_list = QListWidget()
+        self.image_list.setStyleSheet("""
+            QListWidget {
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #eee;
+            }
+            QListWidget::item:selected {
+                background-color: #2196F3;
+                color: white;
+            }
+        """)
         self.image_list.itemSelectionChanged.connect(self.display_image)
 
         left_panel.addWidget(self.upload_btn)
         left_panel.addWidget(self.refresh_btn)
+        left_panel.addLayout(toggle_container)
         left_panel.addWidget(QLabel("Stored Scans:"))
         left_panel.addWidget(self.image_list)
         
-        
         # Ranked prediction results
         self.results_label = QLabel("AI Analysis Results:")
+        self.results_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        
         self.results_list = QListWidget()
+        self.results_list.setStyleSheet("""
+            QListWidget {
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 5px;
+            }
+        """)
 
         left_panel.addWidget(self.results_label)
         left_panel.addWidget(self.results_list)
 
         # ============================================================
-        # RIGHT PANEL: IMAGE VIEWER
+        # RIGHT PANEL: DUAL IMAGE VIEWER
         # ============================================================
-        # QLabel is used to display the image
+        right_panel = QHBoxLayout()
+        
+        # Original image viewer
         self.image_label = QLabel("No image selected")
-
-        # Center text / image inside the label
         self.image_label.setAlignment(Qt.AlignCenter)
-
-        # Scroll area allows large images without distortion
+        self.image_label.setStyleSheet("""
+            QLabel {
+                background-color: #f5f5f5;
+                border: 2px dashed #ccc;
+                border-radius: 5px;
+            }
+        """)
+        
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setWidget(self.image_label)
         
-        # # Heatmap display
-        # self.heatmap_label = QLabel("Heatmap (Top Finding)")
-        # self.heatmap_label.setAlignment(Qt.AlignCenter)
-        # self.heatmap_label.setFixedHeight(300)
-
-        # right_panel = QVBoxLayout()
-        # right_panel.addWidget(self.image_label)
-        # right_panel.addWidget(self.heatmap_label)
-
-        # self.scroll_area.setWidget(QWidget())
-        # self.scroll_area.widget().setLayout(right_panel)
-
+        # Heatmap viewer
+        self.heatmap_label = QLabel("Toggle 'Show Heatmap Overlay' to visualize AI analysis")
+        self.heatmap_label.setAlignment(Qt.AlignCenter)
+        self.heatmap_label.setStyleSheet("""
+            QLabel {
+                background-color: #f5f5f5;
+                border: 2px dashed #ccc;
+                border-radius: 5px;
+            }
+        """)
+        
+        self.heatmap_scroll = QScrollArea()
+        self.heatmap_scroll.setWidgetResizable(True)
+        self.heatmap_scroll.setWidget(self.heatmap_label)
+        
+        # Use splitter for resizable panels
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self.scroll_area)
+        splitter.addWidget(self.heatmap_scroll)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        
+        right_panel.addWidget(splitter)
 
         # ============================================================
         # ADD PANELS TO MAIN LAYOUT
         # ============================================================
         main_layout.addLayout(left_panel, 1)
-        main_layout.addWidget(self.scroll_area, 3)
+        main_layout.addLayout(right_panel, 3)
         
-        print("✓ MainWindow initialized successfully!")
+        print("MainWindow initialized successfully!")
 
     # ============================================================
-    # IMAGE UPLOAD (FILE DIALOG)
+    # IMAGE UPLOAD
     # ============================================================
     def upload_image(self):
-        """
-        Opens a file dialog to select an image.
-
-        The file itself is NOT copied.
-        Only the full path is stored in the database.
-        """
+        """Opens a file dialog to select an image."""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Image",
@@ -157,83 +266,56 @@ class MainWindow(QWidget):
     # DRAG & DROP SUPPORT
     # ============================================================
     def dragEnterEvent(self, event: QDragEnterEvent):
-        """
-        Triggered when a dragged object enters the window.
-
-        We accept the event only if:
-        - It contains URLs (files)
-        - At least one file is an image
-        """
+        """Accept drag events with image files"""
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.toLocalFile().lower().endswith((".png", ".jpg", ".jpeg")):
                     event.acceptProposedAction()
                     return
-
         event.ignore()
 
     def dropEvent(self, event: QDropEvent):
-        """
-        Triggered when files are dropped onto the window.
-
-        Each valid image file:
-        - Is registered in the database
-        - Triggers a UI refresh
-        """
+        """Handle dropped image files"""
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
-
             if file_path.lower().endswith((".png", ".jpg", ".jpeg")):
                 self.register_image(file_path)
 
     # ============================================================
-    # SHARED IMAGE REGISTRATION LOGIC
+    # IMAGE REGISTRATION
     # ============================================================
     def register_image(self, file_path):
-        """
-        Registers an image, runs ML inference,
-        stores findings in a separate database,
-        and updates the UI.
-        """
+        """Register image, run ML inference, and store ALL findings"""
         try:
-            # ============================================================
-            # 1. STORE IMAGE
-            # ============================================================
+            # Store image
             image = ImageRecord.create(
                 file_path=file_path,
                 user="test_user"
             )
             image = self.db.insert_image(image)
 
-            # ============================================================
-            # 2. RUN ML INFERENCE
-            # ============================================================
+            # Run ML inference
             results = predict_xray(self.model, file_path)
 
-            # ============================================================
-            # 3. STORE FINDINGS (TOP RESULT ONLY)
-            # ============================================================
-            top = results["top_prediction"]
+            # Store ALL findings to database (all 14 conditions)
+            findings_to_save = [
+                {
+                    "image_id": image.id,
+                    "label": result["label"],
+                    "probability": result["probability"],
+                    "model_version": "chexpert_resnet50_v1"
+                }
+                for result in results
+            ]
+            self.findings_db.insert_findings(findings_to_save)
 
-            self.findings_db.insert_findings([{
-                "image_id": image.id,
-                "label": top["label"],
-                "probability": top["probability"],
-                "model_version": "chexpert_resnet50_v1"
-            }])
-
-
-            # ============================================================
-            # 4. UPDATE UI
-            # ============================================================
+            # Update UI
             self.load_images()
             self.display_results(results)
-
-            # QMessageBox.information(
-            #     self,
-            #     "Upload Complete",
-            #     "Image uploaded and analyzed successfully."
-            # )
+            
+            # Enable heatmap toggle
+            self.heatmap_toggle.setEnabled(True)
+            self.current_image_path = file_path
 
         except Exception as e:
             QMessageBox.critical(
@@ -242,14 +324,11 @@ class MainWindow(QWidget):
                 str(e)
             )
 
-    
     # ============================================================
     # LOAD IMAGES FROM DATABASE
     # ============================================================
     def load_images(self):
-        """
-        Fetches all stored image metadata and populates the list widget.
-        """
+        """Fetch all stored images and populate list"""
         self.image_list.clear()
         self.images = self.db.fetch_all_images()
 
@@ -259,23 +338,12 @@ class MainWindow(QWidget):
             )
 
     # ============================================================
-    # IMAGE LOADING WITH EXIF ORIENTATION
+    # IMAGE LOADING WITH ORIENTATION
     # ============================================================
     def load_pixmap_with_orientation(self, file_path):
-        """
-        Loads an image from disk and applies EXIF orientation automatically.
-
-        This is CRITICAL for medical images and phone photos where
-        orientation may be stored in metadata instead of pixel layout.
-
-        Returns:
-            QPixmap or None if loading fails
-        """
+        """Load image with EXIF orientation applied"""
         reader = QImageReader(file_path)
-
-        # This tells Qt to apply EXIF rotation and mirroring
         reader.setAutoTransform(True)
-
         image = reader.read()
 
         if image.isNull():
@@ -284,74 +352,130 @@ class MainWindow(QWidget):
         return QPixmap.fromImage(image)
 
     # ============================================================
-    # DISPLAY IMAGE FROM LIST SELECTION
+    # DISPLAY IMAGE
     # ============================================================
     def display_image(self):
-        """
-        Displays the selected image and its associated ML findings.
-        """
+        """Display selected image and its findings"""
         index = self.image_list.currentRow()
 
         if index < 0:
             return
 
         image = self.images[index]
+        self.current_image_path = image.file_path
 
-        # ==============================
-        # LOAD AND DISPLAY IMAGE
-        # ==============================
+        # Load and display image
         pixmap = self.load_pixmap_with_orientation(image.file_path)
 
         if pixmap is None:
             QMessageBox.warning(
                 self,
                 "Error",
-                f"Unable to load image:\n{image.file_path}\n\n"
-                "The file may have been moved or deleted."
+                f"Unable to load image:\n{image.file_path}"
             )
             return
 
         self.current_pixmap = pixmap
         self.update_image_display()
 
-        # ==============================
-        # LOAD STORED FINDINGS
-        # ==============================
+        # Enable heatmap toggle
+        self.heatmap_toggle.setEnabled(True)
+
+        # Load and display results
         results = self.load_results_for_image(image.id)
 
         if results:
             self.display_results(results)
         else:
             self.results_list.clear()
-            self.results_list.addItem("No analysis available for this image.")
+            self.results_list.addItem("No analysis available.")
 
+        # If toggle is on, regenerate heatmap for new image
+        if self.heatmap_toggle.isChecked():
+            self.generate_and_show_heatmap()
+        else:
+            # Clear previous heatmap
+            self.heatmap_label.setText("Toggle 'Show Heatmap Overlay' to visualize AI analysis")
+            self.current_heatmap = None
+
+    # ============================================================
+    # TOGGLE HEATMAP
+    # ============================================================
+    def toggle_heatmap(self, state):
+        """Toggle heatmap display on/off"""
+        if not self.current_image_path:
+            self.heatmap_toggle.setChecked(False)
+            QMessageBox.warning(self, "No Image", "Please select an image first.")
+            return
+
+        if state == Qt.Checked:
+            # Generate and show heatmap
+            self.generate_and_show_heatmap()
+        else:
+            # Hide heatmap, show placeholder
+            self.heatmap_label.setText("Heatmap overlay disabled\n\nToggle switch to re-enable")
+            self.current_heatmap = None
+
+    def generate_and_show_heatmap(self):
+        """Generate Grad-CAM heatmap for current image"""
+        if not self.current_image_path:
+            return
+
+        try:
+            # Show loading message
+            self.heatmap_label.setText("Generating heatmap...\nPlease wait")
+            self.heatmap_label.repaint()  # Force immediate update
+            
+            print(f"Generating heatmap for: {self.current_image_path}")
+            
+            # Generate heatmap
+            result = predict_with_heatmap(
+                self.model,
+                self.current_image_path,
+                target_label=None  # Use top prediction
+            )
+            
+            # Convert PIL Image to QPixmap
+            heatmap_pil = result['heatmap_image']
+            
+            # Convert PIL to QPixmap
+            img_byte_arr = io.BytesIO()
+            heatmap_pil.save(img_byte_arr, format='PNG')
+            img_byte_arr.seek(0)
+            
+            qimg = QImage()
+            qimg.loadFromData(img_byte_arr.read())
+            self.current_heatmap = QPixmap.fromImage(qimg)
+            
+            # Display heatmap
+            self.update_heatmap_display()
+            
+            print(f"Heatmap generated for: {result['target_condition']}")
+            print(f"  Probability: {result['probability']*100:.1f}%")
+            
+        except Exception as e:
+            self.heatmap_toggle.setChecked(False)
+            QMessageBox.critical(
+                self,
+                "Heatmap Error",
+                f"Failed to generate heatmap:\n{str(e)}"
+            )
+            print(f"Error: {e}")
 
     # ============================================================
     # HANDLE WINDOW RESIZE
     # ============================================================
     def resizeEvent(self, event):
-        """
-        Automatically called by Qt when the window is resized.
-
-        We rescale the image so that:
-        - Aspect ratio is preserved
-        - Portrait and landscape images behave correctly
-        """
+        """Rescale images when window is resized"""
         self.update_image_display()
+        self.update_heatmap_display()
         super().resizeEvent(event)
 
     # ============================================================
-    # SCALE AND DISPLAY IMAGE
+    # UPDATE DISPLAYS
     # ============================================================
     def update_image_display(self):
-        """
-        Scales the current image to fit the visible area.
-
-        Important details:
-        - Uses the scroll area's *viewport* size
-        - Preserves aspect ratio
-        - Smooth transformation prevents pixelation
-        """
+        """Scale and display original image"""
         if self.current_pixmap is None:
             return
 
@@ -362,49 +486,47 @@ class MainWindow(QWidget):
         )
 
         self.image_label.setPixmap(scaled)
-        
+
+    def update_heatmap_display(self):
+        """Scale and display heatmap"""
+        if self.current_heatmap is None:
+            return
+
+        scaled = self.current_heatmap.scaled(
+            self.heatmap_scroll.viewport().size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+
+        self.heatmap_label.setPixmap(scaled)
+
     # ============================================================
-    # DISPLAY AI PREDICTION RESULTS
+    # DISPLAY RESULTS
     # ============================================================
     def display_results(self, results):
-        """
-        Displays ranked AI findings for an image.
-
-        Expected format:
-            results = [
-                {
-                    "label": str,
-                    "probability": float,
-                    "percentage": str
-                },
-                ...
-            ]
-        """
+        """Display ALL ranked AI findings"""
         self.results_list.clear()
 
         if not results or not isinstance(results, list):
             self.results_list.addItem("No results available.")
             return
 
-        for r in results:
+        # Display ALL results (all 14 conditions)
+        for i, r in enumerate(results):
             label = r.get("label", "Unknown")
             percentage = r.get("percentage")
 
-            # Fallback if percentage string is missing
             if percentage is None:
                 prob = float(r.get("probability", 0.0))
                 percentage = f"{prob * 100:.2f}%"
 
-            self.results_list.addItem(f"{label} — {percentage}")
-            
-    # ============================================================
-    # DISPLAY AI PREDICTION RESULTS FROM DATABASE
-    # ============================================================
+            # Add ranking indicators
+            prefix = f"{i+1}. "
+
+            self.results_list.addItem(f"{prefix}{label} — {percentage}")
+
     def load_results_for_image(self, image_id):
-        """
-        Loads stored ML findings for an image from the findings database
-        and converts them into the display_results() format.
-        """
+        """Load stored ML findings from database"""
         rows = self.findings_db.fetch_findings_for_image(image_id)
 
         results = []
@@ -416,4 +538,3 @@ class MainWindow(QWidget):
             })
 
         return results
-

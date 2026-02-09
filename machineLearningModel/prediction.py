@@ -3,6 +3,7 @@ import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
 from pathlib import Path
+import numpy as np
 
 # =========================
 # DEVICE SETUP (FIXED)
@@ -17,7 +18,7 @@ def get_device():
     try:
         import torch_directml
         device = torch_directml.device()
-        print("✓ Using Intel GPU (DirectML)")
+        print("Using Intel GPU (DirectML)")
         return device
     except:
         pass
@@ -71,7 +72,7 @@ def load_model(checkpoint_path):
     model = model.to(DEVICE)
     model.eval()
     
-    print(f"✓ Model loaded (trained for {checkpoint['epoch']} epochs)")
+    print(f"Model loaded (trained for {checkpoint['epoch']} epochs)")
     print(f"  Training loss: {checkpoint['train_loss']:.4f}")
     print(f"  Validation loss: {checkpoint['val_loss']:.4f}")
     
@@ -119,6 +120,240 @@ def predict_xray(model, image_path):
     ]
 
 # =========================
+# GRAD-CAM IMPLEMENTATION (INLINE)
+# =========================
+
+import torch.nn.functional as F
+import cv2
+
+class GradCAM:
+    """
+    Grad-CAM: Gradient-weighted Class Activation Mapping
+    
+    Generates heatmaps showing which regions of an X-ray the model
+    focuses on when making predictions.
+    """
+    
+    def __init__(self, model, target_layer):
+        """
+        Args:
+            model: Your trained ResNet model
+            target_layer: Layer to extract gradients from (e.g., model.layer4)
+        """
+        self.model = model
+        self.target_layer = target_layer
+        self.gradients = None
+        self.activations = None
+        
+        # Register hooks to capture gradients and activations
+        self.target_layer.register_forward_hook(self._save_activation)
+        self.target_layer.register_full_backward_hook(self._save_gradient)
+    
+    def _save_activation(self, module, input, output):
+        """Hook to save forward pass activations"""
+        self.activations = output.detach()
+    
+    def _save_gradient(self, module, grad_input, grad_output):
+        """Hook to save backward pass gradients"""
+        self.gradients = grad_output[0].detach()
+    
+    def generate_heatmap(self, input_tensor, class_idx=None):
+        """
+        Generate Grad-CAM heatmap for a specific class
+        
+        Args:
+            input_tensor: Preprocessed image tensor [1, 3, 224, 224]
+            class_idx: Target class index (if None, uses highest prediction)
+        
+        Returns:
+            heatmap: Numpy array [H, W] with values 0-1
+        """
+        self.model.eval()
+        
+        # Get the device from input tensor
+        device = input_tensor.device
+        
+        # Forward pass
+        output = self.model(input_tensor)
+        
+        # If class_idx not specified, use the highest prediction
+        if class_idx is None:
+            class_idx = output.argmax(dim=1).item()
+        
+        # Zero all gradients
+        self.model.zero_grad()
+        
+        # Backward pass for target class
+        target = output[0, class_idx]
+        target.backward()
+        
+        # Get activations and gradients (they're already on the correct device)
+        activations = self.activations[0]  # [C, H, W]
+        gradients = self.gradients[0]      # [C, H, W]
+        
+        # Global average pooling of gradients (importance weights)
+        weights = torch.mean(gradients, dim=[1, 2])  # [C]
+        
+        # Weighted combination of activation maps - ensure on same device
+        cam = torch.zeros(activations.shape[1:], dtype=torch.float32, device=device)
+        for i, w in enumerate(weights):
+            cam += w * activations[i]
+        
+        # Apply ReLU (only positive contributions)
+        cam = F.relu(cam)
+        
+        # Normalize to 0-1
+        cam = cam - cam.min()
+        cam = cam / (cam.max() + 1e-8)
+        
+        # Convert to numpy
+        heatmap = cam.cpu().numpy()
+        
+        return heatmap
+    
+    def overlay_heatmap(self, heatmap, original_image, alpha=0.5, colormap=cv2.COLORMAP_JET):
+        """
+        Overlay heatmap on original image
+        
+        Args:
+            heatmap: Grad-CAM heatmap [H, W]
+            original_image: PIL Image or numpy array
+            alpha: Transparency (0=only image, 1=only heatmap)
+            colormap: OpenCV colormap
+        
+        Returns:
+            overlay: PIL Image with heatmap overlay
+        """
+        # Convert PIL to numpy if needed
+        if isinstance(original_image, Image.Image):
+            img = np.array(original_image.convert('RGB'))
+        else:
+            img = original_image.copy()
+        
+        # Resize heatmap to match image
+        h, w = img.shape[:2]
+        heatmap_resized = cv2.resize(heatmap, (w, h))
+        
+        # Apply colormap
+        heatmap_colored = cv2.applyColorMap(
+            np.uint8(255 * heatmap_resized), 
+            colormap
+        )
+        heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+        
+        # Blend with original image
+        overlay = cv2.addWeighted(img, 1 - alpha, heatmap_colored, alpha, 0)
+        
+        return Image.fromarray(overlay)
+    
+    def overlay_with_contours(self, heatmap, original_image, threshold=0.5, alpha=0.4):
+        """
+        Overlay heatmap with contour lines like medical imaging style
+        
+        Args:
+            heatmap: Grad-CAM heatmap [H, W]
+            original_image: PIL Image
+            threshold: Only show regions above this activation
+            alpha: Transparency
+        
+        Returns:
+            overlay: PIL Image with contoured heatmap
+        """
+        # Convert image
+        img = np.array(original_image.convert('RGB'))
+        h, w = img.shape[:2]
+        
+        # Resize heatmap
+        heatmap_resized = cv2.resize(heatmap, (w, h))
+        
+        # Create mask for high-activation regions
+        mask = (heatmap_resized > threshold).astype(np.uint8) * 255
+        
+        # Apply colormap
+        heatmap_colored = cv2.applyColorMap(
+            np.uint8(255 * heatmap_resized), 
+            cv2.COLORMAP_JET
+        )
+        heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+        
+        # Only show heatmap where activation is high
+        for c in range(3):
+            heatmap_colored[:, :, c] = np.where(
+                mask > 0,
+                heatmap_colored[:, :, c],
+                0
+            )
+        
+        # Blend
+        overlay = cv2.addWeighted(img, 1 - alpha, heatmap_colored, alpha, 0)
+        
+        # Find and draw contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay, contours, -1, (0, 0, 0), 2)
+        
+        return Image.fromarray(overlay)
+
+# =========================
+# HEATMAP GENERATION FUNCTIONS
+# =========================
+
+def predict_with_heatmap(model, image_path, target_label=None, save_path=None):
+    """
+    Generate prediction with Grad-CAM heatmap overlay
+    
+    Args:
+        model: Trained model
+        image_path: Path to X-ray image
+        target_label: Specific condition to visualize (or None for top prediction)
+        save_path: Where to save the heatmap (optional)
+    
+    Returns:
+        Dictionary with predictions and heatmap image (PIL Image)
+    """
+    # Get predictions
+    predictions = predict_xray(model, image_path)
+    
+    # Load original image
+    image = Image.open(image_path).convert('RGB')
+    input_tensor = transform(image).unsqueeze(0).to(DEVICE)
+    
+    # Create Grad-CAM
+    gradcam = GradCAM(model, model.layer4)
+    
+    # Determine target class
+    if target_label is None:
+        # Use top prediction
+        label = predictions[0]['label']
+    else:
+        label = target_label
+    
+    # Get the class index
+    class_idx = LABELS.index(label)
+    
+    # Generate heatmap
+    heatmap = gradcam.generate_heatmap(input_tensor, class_idx=class_idx)
+    
+    # Create overlay with contours (medical imaging style)
+    overlay = gradcam.overlay_with_contours(
+        heatmap,
+        image,
+        threshold=0.5,
+        alpha=0.4
+    )
+    
+    # Save if requested
+    if save_path:
+        overlay.save(save_path)
+        print(f"Heatmap saved to: {save_path}")
+    
+    return {
+        'predictions': predictions,
+        'heatmap_image': overlay,
+        'target_condition': label,
+        'probability': next(p['probability'] for p in predictions if p['label'] == label)
+    }
+
+# =========================
 # BATCH PREDICTION
 # =========================
 
@@ -150,101 +385,22 @@ def predict_batch(model, image_folder, output_csv="predictions.csv", threshold=0
     
     for image_path in image_files:
         print(f"Processing: {os.path.basename(image_path)}")
-        results = predict_xray(model, image_path, threshold)
+        results = predict_xray(model, image_path)
         
         # Prepare row for CSV
         row = {'Image': os.path.basename(image_path)}
-        row.update(results['predictions'])
+        for r in results:
+            row[r['label']] = r['probability']
         all_results.append(row)
         
-        # Print detected abnormalities
-        if results['detected_abnormalities']:
-            print("  Detected:")
-            for det in results['detected_abnormalities']:
-                print(f"    - {det['condition']}: {det['probability']:.1%}")
-        else:
-            print("  No abnormalities detected")
+        # Print top predictions
+        print("  Top predictions:")
+        for i, r in enumerate(results[:3]):
+            print(f"    {i+1}. {r['label']}: {r['percentage']}")
     
     # Save to CSV
     df = pd.DataFrame(all_results)
     df.to_csv(output_csv, index=False)
-    print(f"\n✓ Results saved to: {output_csv}")
+    print(f"\nResults saved to: {output_csv}")
     
     return df
-
-# =========================
-# EXAMPLE USAGE
-# =========================
-
-if __name__ == "__main__":
-    import os
-    
-    # Load your trained model
-    model = load_model(CHECKPOINT_PATH)
-    
-    print("\n" + "="*60)
-    print("CHEST X-RAY ABNORMALITY DETECTOR")
-    print("="*60)
-    print("1. Single image prediction")
-    print("2. Batch prediction (folder of images)")
-    print("="*60)
-    
-    mode = input("Enter choice (1 or 2): ").strip()
-    
-    if mode == "1":
-        # Single image prediction
-        image_path = input("Enter path to X-ray image: ").strip().strip('"')
-        
-        if os.path.exists(image_path):
-            print("\nAnalyzing X-ray...")
-            results = predict_xray(model, image_path)
-            
-            print("\n" + "="*60)
-            print(f"Results for: {os.path.basename(image_path)}")
-            print("="*60)
-            
-            # Sort by probability
-            sorted_preds = sorted(results['predictions'].items(), 
-                                key=lambda x: x[1], reverse=True)
-            
-            print("\nAll predictions:")
-            for label, prob in sorted_preds:
-                bar = "█" * int(prob * 20)
-                print(f"  {label:30s} {prob:6.1%} {bar}")
-            
-            if results['detected_abnormalities']:
-                print("\n🔴 Detected abnormalities (>50% probability):")
-                for det in results['detected_abnormalities']:
-                    print(f"  • {det['condition']}: {det['probability']:.1%}")
-            else:
-                print("\n✅ No significant abnormalities detected")
-        else:
-            print(f"Error: Image not found at {image_path}")
-    
-    elif mode == "2":
-        # Batch prediction
-        folder_path = input("Enter path to folder with X-rays: ").strip().strip('"')
-        output_csv = input("Enter output CSV filename (default: predictions.csv): ").strip()
-        
-        if not output_csv:
-            output_csv = "predictions.csv"
-        
-        if os.path.exists(folder_path):
-            print("\nProcessing batch...")
-            df = predict_batch(model, folder_path, output_csv)
-            
-            print("\n" + "="*60)
-            print("Batch processing complete!")
-            print("="*60)
-            print(f"Processed {len(df)} images")
-            print(f"Results saved to: {output_csv}")
-        else:
-            print(f"Error: Folder not found at {folder_path}")
-    else:
-        print("Invalid choice")
-    
-    print("\n" + "="*60)
-    print("⚠️  DISCLAIMER:")
-    print("This is an AI prediction tool, not a medical diagnosis.")
-    print("Always consult qualified healthcare professionals.")
-    print("="*60)

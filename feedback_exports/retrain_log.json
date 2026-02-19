@@ -1,0 +1,184 @@
+[
+  {
+    "timestamp": "2026-02-18T20:51:54.699707",
+    "type": "feedback_stats",
+    "overall_accuracy": 7.1,
+    "per_label": [
+      {
+        "label": "Cardiomegaly",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Consolidation",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Edema",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Fracture",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Lung Lesion",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Lung Opacity",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "No Finding",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Pleural Effusion",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Pleural Other",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Pneumonia",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Pneumothorax",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Support Devices",
+        "total": 3,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Atelectasis",
+        "total": 3,
+        "correct": 1,
+        "accuracy_pct": 33.3
+      },
+      {
+        "label": "Enlarged Cardiomediastinum",
+        "total": 3,
+        "correct": 2,
+        "accuracy_pct": 66.7
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-02-18T20:58:44.206732",
+    "type": "feedback_stats",
+    "overall_accuracy": 7.1,
+    "per_label": [
+      {
+        "label": "Cardiomegaly",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Consolidation",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Edema",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Fracture",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Lung Opacity",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "No Finding",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Pleural Effusion",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Pleural Other",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Pneumonia",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Pneumothorax",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Support Devices",
+        "total": 4,
+        "correct": 0,
+        "accuracy_pct": 0.0
+      },
+      {
+        "label": "Atelectasis",
+        "total": 4,
+        "correct": 1,
+        "accuracy_pct": 25.0
+      },
+      {
+        "label": "Lung Lesion",
+        "total": 4,
+        "correct": 1,
+        "accuracy_pct": 25.0
+      },
+      {
+        "label": "Enlarged Cardiomediastinum",
+        "total": 4,
+        "correct": 2,
+        "accuracy_pct": 50.0
+      }
+    ]
+  }
+]

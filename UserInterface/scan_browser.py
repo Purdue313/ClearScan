@@ -9,6 +9,7 @@ from PySide6.QtGui import QFont, QColor, QPalette
 
 from Database.imageDatabase import ImageDatabase
 from Database.findingsDatabase import FindingsDatabase
+from Database.patientDatabase import PatientDatabase
 from machineLearningModel.prediction import LABELS
 
 
@@ -198,10 +199,12 @@ class ScanBrowserWindow(QWidget):
 
     open_image = Signal(int)   # image_id
 
-    def __init__(self, image_db: ImageDatabase, findings_db: FindingsDatabase, parent=None):
+    def __init__(self, image_db: ImageDatabase, findings_db: FindingsDatabase,
+                 patient_db: PatientDatabase, parent=None):
         super().__init__(parent)
         self.image_db    = image_db
         self.findings_db = findings_db
+        self.patient_db  = patient_db
         self._all_rows   = []   # cached full dataset
 
         self.setWindowTitle("ClearScan — Scan Browser")
@@ -271,9 +274,9 @@ class ScanBrowserWindow(QWidget):
 
         # ── Table ────────────────────────────────────────────────
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
-            "ID", "Filename", "Uploaded", "Status", "Diagnosed As", "Top AI Finding"
+            "ID", "Patient", "Filename", "Uploaded", "Status", "Diagnosed As", "Top AI Finding"
         ])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -286,11 +289,12 @@ class ScanBrowserWindow(QWidget):
 
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(6, QHeaderView.ResizeToContents)
 
         self.table.setStyleSheet(f"""
             QTableWidget {{
@@ -353,10 +357,9 @@ class ScanBrowserWindow(QWidget):
         for img in images:
             diagnosis = self.findings_db.fetch_diagnosis(img.id)
             findings  = self.findings_db.fetch_findings_for_image(img.id)
-            top_ai    = findings[0][0] if findings else "—"   # label column, highest prob
-
-            # Parse date from uploaded_at (format: "YYYY-MM-DD HH:MM:SS" or ISO)
-            date_str = str(img.uploaded_at)[:10]   # just the date part
+            top_ai    = findings[0][0] if findings else "—"
+            patient   = self.patient_db.fetch_patient_for_image(img.id)
+            date_str  = str(img.uploaded_at)[:10]
 
             self._all_rows.append({
                 "id":        img.id,
@@ -366,6 +369,7 @@ class ScanBrowserWindow(QWidget):
                 "diagnosed": diagnosis is not None,
                 "dx_label":  diagnosis["confirmed_label"] if diagnosis else "",
                 "top_ai":    top_ai,
+                "patient":   patient.full_name if patient else "—",
             })
 
         self._apply_filters()
@@ -422,45 +426,47 @@ class ScanBrowserWindow(QWidget):
             id_item.setData(Qt.UserRole, row["id"])
             self.table.setItem(r, 0, id_item)
 
+            # Patient
+            pt_item = QTableWidgetItem(row["patient"])
+            pt_item.setForeground(QColor(WHITE if row["patient"] != "—" else GREY))
+            self.table.setItem(r, 1, pt_item)
+
             # Filename
             fn_item = QTableWidgetItem(row["filename"])
             fn_item.setToolTip(row["path"])
-            self.table.setItem(r, 1, fn_item)
+            self.table.setItem(r, 2, fn_item)
 
             # Date
             date_item = QTableWidgetItem(row["date"])
             date_item.setTextAlignment(Qt.AlignCenter)
             date_item.setForeground(QColor(GREY))
-            self.table.setItem(r, 2, date_item)
+            self.table.setItem(r, 3, date_item)
 
             # Status badge
             if row["diagnosed"]:
-                status_text = "✔  Diagnosed"
+                status_text  = "✔  Diagnosed"
                 status_color = GREEN
             else:
-                status_text = "○  Pending"
+                status_text  = "○  Pending"
                 status_color = AMBER
 
             status_item = QTableWidgetItem(status_text)
             status_item.setTextAlignment(Qt.AlignCenter)
             status_item.setForeground(QColor(status_color))
             status_item.setFont(QFont("Segoe UI", 11, QFont.Bold))
-            self.table.setItem(r, 3, status_item)
+            self.table.setItem(r, 4, status_item)
 
             # Diagnosed as
             dx_item = QTableWidgetItem(row["dx_label"] or "—")
             dx_item.setTextAlignment(Qt.AlignCenter)
-            if row["dx_label"]:
-                dx_item.setForeground(QColor(WHITE))
-            else:
-                dx_item.setForeground(QColor(GREY))
-            self.table.setItem(r, 4, dx_item)
+            dx_item.setForeground(QColor(WHITE if row["dx_label"] else GREY))
+            self.table.setItem(r, 5, dx_item)
 
             # Top AI finding
             ai_item = QTableWidgetItem(row["top_ai"])
             ai_item.setTextAlignment(Qt.AlignCenter)
             ai_item.setForeground(QColor(GREY))
-            self.table.setItem(r, 5, ai_item)
+            self.table.setItem(r, 6, ai_item)
 
         self.table.setSortingEnabled(True)
         total   = len(self._all_rows)

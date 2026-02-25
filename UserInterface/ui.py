@@ -15,6 +15,8 @@ from machineLearningModel.prediction import load_model, predict_xray, predict_wi
 
 from UserInterface.diagnosis_window import DiagnosisWindow
 from UserInterface.scan_browser import ScanBrowserWindow
+from UserInterface.patient_selector import PatientSelectorDialog
+from Database.patientDatabase import PatientDatabase
 from machineLearningModel.ml_feedback_manager import MLFeedbackManager
 
 
@@ -44,6 +46,7 @@ class MainWindow(QWidget):
         print("Initializing databases...")
         self.db          = ImageDatabase()
         self.findings_db = FindingsDatabase()
+        self.patient_db  = PatientDatabase()
 
         self.images             = []
         self.current_pixmap     = None
@@ -167,7 +170,7 @@ class MainWindow(QWidget):
         self.diagnosis_window.diagnosis_saved.connect(self._on_diagnosis_saved)
 
         # Scan browser (separate window, created once, shown on demand)
-        self.scan_browser = ScanBrowserWindow(self.db, self.findings_db)
+        self.scan_browser = ScanBrowserWindow(self.db, self.findings_db, self.patient_db)
         self.scan_browser.open_image.connect(self._open_image_from_browser)
 
         self.right_tabs.addTab(viewer_widget,         "🖼  Image Viewer")
@@ -183,11 +186,17 @@ class MainWindow(QWidget):
     # IMAGE UPLOAD
     # ============================================================
     def upload_image(self):
+        # Step 1: select patient first
+        dialog = PatientSelectorDialog(self.patient_db, self)
+        accepted = dialog.exec()
+        patient = dialog.selected_patient  # None if skipped
+
+        # Step 2: pick file
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Image", "", "Images (*.png *.jpg *.jpeg)"
         )
         if file_path:
-            self.register_image(file_path)
+            self.register_image(file_path, patient)
 
     # ============================================================
     # DRAG & DROP
@@ -201,19 +210,31 @@ class MainWindow(QWidget):
         event.ignore()
 
     def dropEvent(self, event: QDropEvent):
-        for url in event.mimeData().urls():
-            file_path = url.toLocalFile()
-            if file_path.lower().endswith((".png", ".jpg", ".jpeg")):
-                self.register_image(file_path)
+        paths = [
+            url.toLocalFile() for url in event.mimeData().urls()
+            if url.toLocalFile().lower().endswith((".png", ".jpg", ".jpeg"))
+        ]
+        if not paths:
+            return
+        # Show patient selector once for all dropped files
+        dialog = PatientSelectorDialog(self.patient_db, self)
+        dialog.exec()
+        patient = dialog.selected_patient
+        for file_path in paths:
+            self.register_image(file_path, patient)
 
     # ============================================================
     # IMAGE REGISTRATION
     # ============================================================
-    def register_image(self, file_path):
-        """Register image, run ML inference, and store ALL findings."""
+    def register_image(self, file_path, patient=None):
+        """Register image, run ML inference, store findings, link to patient."""
         try:
             image = ImageRecord.create(file_path=file_path, user="test_user")
             image = self.db.insert_image(image)
+
+            # Link to patient if one was selected
+            if patient is not None:
+                self.patient_db.link_image_to_patient(image.id, patient.id)
 
             results = predict_xray(self.model, file_path)
 

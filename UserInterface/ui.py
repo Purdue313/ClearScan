@@ -14,6 +14,7 @@ from Source.Models.image_model import ImageRecord
 from machineLearningModel.prediction import load_model, predict_xray, predict_with_heatmap, CHECKPOINT_PATH
 
 from UserInterface.diagnosis_window import DiagnosisWindow
+from UserInterface.scan_browser import ScanBrowserWindow
 from machineLearningModel.ml_feedback_manager import MLFeedbackManager
 
 
@@ -87,6 +88,17 @@ class MainWindow(QWidget):
         """)
         self.refresh_btn.clicked.connect(self.load_images)
 
+        self.browse_btn = QPushButton("🔍  Browse & Filter Scans")
+        self.browse_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0d9488; color: white; border: none;
+                padding: 10px; font-size: 14px; font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover { background-color: #0f766e; }
+        """)
+        self.browse_btn.clicked.connect(self._open_browser)
+
         # Heatmap toggle
         toggle_container = QHBoxLayout()
         self.heatmap_toggle = QCheckBox("Show Heatmap Overlay")
@@ -121,6 +133,7 @@ class MainWindow(QWidget):
 
         left_panel.addWidget(self.upload_btn)
         left_panel.addWidget(self.refresh_btn)
+        left_panel.addWidget(self.browse_btn)
         left_panel.addLayout(toggle_container)
         left_panel.addWidget(QLabel("Stored Scans:"))
         left_panel.addWidget(self.image_list)
@@ -152,6 +165,10 @@ class MainWindow(QWidget):
         # Tab 2 — diagnosis
         self.diagnosis_window = DiagnosisWindow(self.findings_db, self.db, model=self.model)
         self.diagnosis_window.diagnosis_saved.connect(self._on_diagnosis_saved)
+
+        # Scan browser (separate window, created once, shown on demand)
+        self.scan_browser = ScanBrowserWindow(self.db, self.findings_db)
+        self.scan_browser.open_image.connect(self._open_image_from_browser)
 
         self.right_tabs.addTab(viewer_widget,         "🖼  Image Viewer")
         self.right_tabs.addTab(self.diagnosis_window, "🩺  Diagnosis")
@@ -283,7 +300,9 @@ class MainWindow(QWidget):
     # HEATMAP
     # ============================================================
     def toggle_heatmap(self, state):
-        if state == Qt.Checked:
+        # stateChanged emits an int (2 = checked, 0 = unchecked)
+        if int(state) == 2:
+            # If no image path yet, try to get it from whatever is selected
             if not self.current_image_path:
                 index = self.image_list.currentRow()
                 if index >= 0:
@@ -292,6 +311,12 @@ class MainWindow(QWidget):
                     self.heatmap_toggle.setChecked(False)
                     QMessageBox.warning(self, "No Image", "Please select an image first.")
                     return
+
+            # If pixmap isn't loaded yet (image was selected before toggle turned on)
+            # load it now so update_image_display has something to fall back to
+            if self.current_pixmap is None:
+                self.current_pixmap = self.load_pixmap_with_orientation(self.current_image_path)
+
             self.generate_and_show_heatmap()
         else:
             self.current_heatmap = None
@@ -369,3 +394,34 @@ class MainWindow(QWidget):
         Refreshes the scan list so the ✔ badge appears immediately.
         """
         self.load_images()
+
+    # ============================================================
+    # SCAN BROWSER
+    # ============================================================
+    def _open_browser(self):
+        """Open the scan browser window and refresh its data."""
+        self.scan_browser.refresh()
+        self.scan_browser.show()
+        self.scan_browser.raise_()
+        self.scan_browser.activateWindow()
+
+    def _open_image_from_browser(self, image_id: int):
+        """
+        Called when the user double-clicks a row in the scan browser.
+        Selects that image in the main list and brings the main window forward.
+        """
+        # Find the row in self.images that matches image_id
+        for i, img in enumerate(self.images):
+            if img.id == image_id:
+                self.image_list.setCurrentRow(i)
+                break
+        else:
+            # Image not in list yet — reload then try again
+            self.load_images()
+            for i, img in enumerate(self.images):
+                if img.id == image_id:
+                    self.image_list.setCurrentRow(i)
+                    break
+
+        self.raise_()
+        self.activateWindow()
